@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Sticker WebAR</title>
+  <!-- A-Frame & MindAR -->
+  <script src="https://aframe.io"></script>
+  <script src="https://jsdelivr.net"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: transparent !important;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    /* Fix for white/black camera screen bugs on iOS Safari & Android Chrome */
+    video {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      object-fit: cover !important;
+      z-index: -2 !important;
+    }
+
+    a-scene {
+      position: fixed !important;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+    }
+
+    /* Start / Audio Gesture Overlay */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 10, 14, 0.92);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      color: #fff;
+      text-align: center;
+      padding: 24px;
+      transition: opacity 0.3s ease;
+    }
+    #overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #start-btn {
+      background: #ff3b5c;
+      color: #fff;
+      border: none;
+      padding: 16px 32px;
+      font-size: 18px;
+      font-weight: 700;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(255, 59, 92, 0.4);
+    }
+    #start-btn:disabled {
+      background: #555;
+      box-shadow: none;
+      cursor: wait;
+    }
+    #status-text {
+      margin-top: 14px;
+      font-size: 14px;
+      color: #bbb;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- User Interaction Overlay -->
+  <div id="overlay">
+    <button id="start-btn" disabled>Loading AR...</button>
+    <p id="status-text">Point your camera at the sticker after starting</p>
+  </div>
+
+  <!-- A-Frame Scene (injected dynamically after config loads) -->
+  <div id="scene-container"></div>
+
+  <script>
+    const startBtn = document.getElementById("start-btn");
+    const statusText = document.getElementById("status-text");
+    const overlay = document.getElementById("overlay");
+    const sceneContainer = document.getElementById("scene-container");
+
+    let videoElements = [];
+
+    async function initApp() {
+      try {
+        // Cache-bust JSON so weekly updates show up immediately on phones
+        const response = await fetch(`./stickers.json?v=${Date.now()}`);
+        if (!response.ok) throw new Error("Could not load stickers.json");
+        const config = await response.json();
+
+        buildScene(config);
+      } catch (err) {
+        console.error(err);
+        startBtn.textContent = "Error Loading Config";
+        statusText.textContent = err.message;
+      }
+    }
+
+    function buildScene(config) {
+      // Create video assets HTML & target entities HTML
+      let assetsHTML = "";
+      let entitiesHTML = "";
+
+      config.stickers.forEach((sticker, idx) => {
+        const videoId = `vid-${idx}`;
+        assetsHTML += `
+          <video
+            id="${videoId}"
+            src="${sticker.video}"
+            preload="auto"
+            loop
+            muted
+            playsinline
+            webkit-playsinline
+            crossorigin="anonymous">
+          </video>
+        `;
+
+        entitiesHTML += `
+          
+            <a-plane
+              src="#${videoId}"
+              position="0 0 0"
+              height="${sticker.height || 1}"
+              width="${sticker.width || 1}"
+              material="shader: flat; transparent: true;">
+            </a-plane>
+          
+        `;
+      });
+
+      // Inject complete A-Frame scene
+      sceneContainer.innerHTML = `
+        <a-scene
+          mindar-image="imageTargetSrc: ${config.mindFile}; autoStart: false; uiLoading: no; uiScanning: no; uiError: no;"
+          color-space="sRGB"
+          renderer="colorManagement: true, physicallyCorrectLights: false, alpha: true"
+          vr-mode-ui="enabled: false"
+          device-orientation-permission-ui="enabled: false">
+          
+          <a-assets timeout="10000">
+            ${assetsHTML}
+          </a-assets>
+
+          <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+          ${entitiesHTML}
+        </a-scene>
+      `;
+
+      const sceneEl = sceneContainer.querySelector("a-scene");
+
+      sceneEl.addEventListener("loaded", () => {
+        // Collect all videos and bind targetFound / targetLost events
+        const targetEntities = sceneEl.querySelectorAll("[mindar-image-target]");
+        targetEntities.forEach((entity) => {
+          const vid = document.getElementById(entity.getAttribute("data-video-id"));
+          videoElements.push(vid);
+
+          entity.addEventListener("targetFound", () => {
+            vid.muted = false;
+            vid.play().catch((e) => console.warn("Playback blocked:", e));
+          });
+
+          entity.addEventListener("targetLost", () => {
+            vid.pause();
+          });
+        });
+
+        startBtn.disabled = false;
+        startBtn.textContent = "Tap to Start AR & Sound";
+      });
+
+      // Single user tap unlocks camera AND mobile audio permissions
+      startBtn.addEventListener("click", async () => {
+        startBtn.disabled = true;
+        startBtn.textContent = "Starting Camera...";
+
+        try {
+          // Prime all videos during the user gesture so iOS allows unmuted playback later
+          for (const vid of videoElements) {
+            vid.muted = false;
+            await vid.play();
+            vid.pause();
+            vid.currentTime = 0;
+          }
+
+          const mindarSystem = sceneEl.systems["mindar-image-system"];
+          await mindarSystem.start();
+
+          overlay.classList.add("hidden");
+        } catch (err) {
+          console.error("Camera/Audio start error:", err);
+          startBtn.disabled = false;
+          startBtn.textContent = "Retry Camera Access";
+          statusText.textContent = "Please allow camera permissions in your browser settings.";
+        }
+      });
+    }
+
+    initApp();
+  </script>
+</body>
+</html>
