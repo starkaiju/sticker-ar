@@ -1,0 +1,12 @@
+{
+  "mindFile": "./assets/targets/week1.mind",
+  "stickers": [
+    {
+      "targetIndex": 0,
+      "name": "Sticker 1",
+      "video": "./assets/videos/sticker1.mp4",
+      "width": 1,
+      "height": 1
+    }
+  ]
+}
